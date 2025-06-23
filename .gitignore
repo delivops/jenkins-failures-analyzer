@@ -1,0 +1,5 @@
+failed_build_logs/*
+.venv
+__pycache__
+.DS_Store
+.env

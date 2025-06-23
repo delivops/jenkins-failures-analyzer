@@ -1,0 +1,4 @@
+services:
+  jenkins-failure-analysis:
+    container_name: jenkins-failure-analysis
+    build: .
