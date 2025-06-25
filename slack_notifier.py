@@ -64,7 +64,7 @@ class SlackNotifier:
         
         # Send summary header first
         print("📤 Sending Jenkins health summary...")
-        summary_success, thread_ts = self._send_summary_header(total_failed_jobs, total_failed_builds)
+        summary_success, _ = self._send_summary_header(total_failed_jobs, total_failed_builds)
         
         if not summary_success:
             return False
@@ -141,7 +141,7 @@ class SlackNotifier:
 
         return self._send_message(payload, "Summary")
     
-    def _send_job_summary(self, job_name: str, exceptions: Dict, thread_ts: str = None) -> bool:
+    def _send_job_summary(self, job_name: str, exceptions: Dict) -> bool:
         """Send a clean summary message for a single job with exception counts and file attachment."""
         
         total_job_failures = sum(data['count'] for data in exceptions.values())
@@ -159,21 +159,41 @@ class SlackNotifier:
         else:
             job_link = job_name
         
-        blocks = [
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"🔴 *{job_link}* ({failure_display})\n"
-                }
-            }
-        ]
+        # Sort exceptions within job by count (descending)
+        sorted_exceptions = sorted(exceptions.items(), 
+                                 key=lambda x: x[1]['count'], 
+                                 reverse=True)
+        
+        # Add each exception as a simple count line
+        exception_lines = []
+        for exception_type, data in sorted_exceptions:
+            count = data['count']
+            
+            # Format the exception count with "+" if at limit
+            if count >= MAX_FAILURES_COUNT_PER_JOB:
+                count_display = f"x{MAX_FAILURES_COUNT_PER_JOB}+"
+            else:
+                count_display = f"x{count}"
+            
+            # Create simple summary for this exception type
+            unique_count = len(data['unique_messages'])
+            if unique_count == 1:
+                summary_text = f"*{exception_type}* ({count_display})"
+            else:
+                summary_text = f"*{exception_type}* ({count_display}, {unique_count} unique)"
+            
+            exception_lines.append(summary_text)
+        
+        # Create the message text
+        message_text = f"🔴 *{job_link}* ({failure_display})"
+        if exception_lines:
+            message_text += "\n" + "\n".join(exception_lines)
         
         # Send the message with file attachment
-        return self._send_message_with_file(blocks, job_name, exceptions, thread_ts)
-    
-    def _send_message_with_file(self, blocks: list, job_name: str, exceptions: Dict, thread_ts: str = None) -> bool:
-        """Send a message with blocks and attach a file with exception details."""
+        return self._send_message_with_file(message_text, job_name, exceptions)
+
+    def _send_message_with_file(self, message_text: str, job_name: str, exceptions: Dict) -> bool:
+        """Send a message with text and attach a file with exception details using modern Slack API."""
         if not self.bot_token or not self.channel:
             print("❌ Cannot send message with file without SLACK_BOT_TOKEN and SLACK_CHANNEL")
             return False
@@ -185,45 +205,68 @@ class SlackNotifier:
         # Create file content
         file_content = self._create_snippet_content(job_name, exceptions)
         
-        # Create initial comment from blocks
-        initial_comment = ""
-        for block in blocks:
-            if block.get("type") == "section":
-                text = block.get("text", {}).get("text", "")
-                if text:
-                    initial_comment += text + "\n"
-        
-        # Upload the file using Slack's files.upload API
-        url = "https://slack.com/api/files.upload"
+        # Step 1: Get upload URL using files.getUploadURLExternal
+        upload_url_endpoint = "https://slack.com/api/files.getUploadURLExternal"
         headers = {
-            "Authorization": f"Bearer {self.bot_token}"
+            "Authorization": f"Bearer {self.bot_token}",
+            "Content-Type": "application/x-www-form-urlencoded"
         }
         
-        files = {
-            'file': (filename, file_content, 'text/plain')
+        upload_url_payload = {
+            "filename": filename,
+            "length": str(len(file_content.encode('utf-8')))
         }
-        
-        data_payload = {
-            'channels': self.channel,
-            'title': f"Exception details for {job_name}",
-            'filetype': 'text',
-            'initial_comment': initial_comment.strip(),
-        }
-        
-        # Add thread_ts if provided
-        if thread_ts:
-            data_payload['thread_ts'] = thread_ts
         
         try:
-            response = requests.post(url, headers=headers, files=files, data=data_payload, timeout=30)
-            response.raise_for_status()
+            # Get upload URL using form data instead of JSON
+            upload_url_response = requests.post(upload_url_endpoint, headers=headers, data=upload_url_payload, timeout=30)
+            upload_url_response.raise_for_status()
             
-            result = response.json()
-            if result.get("ok"):
+            upload_url_result = upload_url_response.json()
+            
+            if not upload_url_result.get("ok"):
+                print(f"❌ Failed to get upload URL: {upload_url_result.get('error', 'Unknown error')}")
+                return False
+            
+            upload_url = upload_url_result.get("upload_url")
+            file_id = upload_url_result.get("file_id")
+            
+            if not upload_url or not file_id:
+                print("❌ Missing upload_url or file_id in response")
+                return False
+            
+            # Step 2: Upload file to the URL
+            upload_response = requests.post(upload_url, files={'file': (filename, file_content, 'text/plain')}, timeout=30)
+            upload_response.raise_for_status()
+            
+            # Step 3: Complete the upload using files.completeUploadExternal
+            complete_upload_endpoint = "https://slack.com/api/files.completeUploadExternal"
+            complete_headers = {
+                "Authorization": f"Bearer {self.bot_token}",
+                "Content-Type": "application/json"
+            }
+            
+            complete_upload_payload = {
+                "files": [
+                    {
+                        "id": file_id,
+                        "title": f"Exception details for {job_name}"
+                    }
+                ],
+                "channel_id": self.channel,
+                "initial_comment": message_text
+            }
+            
+            complete_response = requests.post(complete_upload_endpoint, headers=complete_headers, json=complete_upload_payload, timeout=30)
+            complete_response.raise_for_status()
+            
+            complete_result = complete_response.json()
+            
+            if complete_result.get("ok"):
                 print(f"✅ Sent message with attached file: {filename}")
                 return True
             else:
-                print(f"❌ Failed to send message with file {filename}: {result.get('error', 'Unknown error')}")
+                print(f"❌ Failed to complete file upload {filename}: {complete_result.get('error', 'Unknown error')}")
                 return False
                 
         except Exception as e:
