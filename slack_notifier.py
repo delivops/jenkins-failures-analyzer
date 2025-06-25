@@ -341,7 +341,7 @@ class SlackNotifier:
             
             for job_name, exceptions in sorted_jobs:
                 print(f"📤 Sending details for job: {job_name}")
-                self.send_job_summary(job_name, exceptions, thread_ts)
+                self.send_job_summary(job_name, exceptions)
         
         return True
     
