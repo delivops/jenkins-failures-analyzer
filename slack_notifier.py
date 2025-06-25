@@ -28,6 +28,25 @@ class SlackNotifier:
         text = text.replace('>', '&gt;')
         return text
     
+    def _truncate_for_slack(self, text: str, max_chars: int = 2900) -> str:
+        """Truncate text to fit Slack's character limits for text blocks."""
+        if len(text) <= max_chars:
+            return text
+        
+        # Try to truncate at a reasonable point (newline or space)
+        truncated = text[:max_chars-10]  # Leave room for "..." indicator
+        
+        # Find the last newline or space to break cleanly
+        last_newline = truncated.rfind('\n')
+        last_space = truncated.rfind(' ')
+        
+        if last_newline > max_chars - 200:  # If newline is reasonably close to limit
+            truncated = truncated[:last_newline]
+        elif last_space > max_chars - 200:  # If space is reasonably close to limit
+            truncated = truncated[:last_space]
+        
+        return truncated + "..."
+    
     def _send_message(self, payload: Dict, message_type: str, thread_ts: str = None) -> Tuple[bool, Optional[str]]:
         """Send a message using Slack Web API."""
         if not self.bot_token:
@@ -123,14 +142,27 @@ class SlackNotifier:
                 else:
                     failure_display = f"{total_job_failures} failures"
                 
-                # Build exception text
-                exception_lines = []
+                # Create job title block with link
+                if JENKINS_URL:
+                    job_link = f"<{JENKINS_URL}/job/{job_name}/|{job_name}>"
+                else:
+                    job_link = job_name
+                
+                job_title_block = {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*{job_link}* ({failure_display})"
+                    }
+                }
+                blocks.append(job_title_block)
                 
                 # Sort exceptions within job by count (descending)
                 sorted_exceptions = sorted(exceptions.items(), 
                                          key=lambda x: x[1]['count'], 
                                          reverse=True)
                 
+                # Create separate block for each exception
                 for exception_type, data in sorted_exceptions:
                     count = data['count']
                     
@@ -140,8 +172,11 @@ class SlackNotifier:
                     else:
                         count_display = f"x{count}"
                     
-                    # Add exception details with latest error and build links
+                    # Truncate and escape exception preview
                     exception_preview = self._escape_slack_text(data['latest_line'])
+                    exception_preview = self._truncate_for_slack(exception_preview, 2500)  # Leave room for other text
+                    
+                    # Build exception detail text
                     exception_detail = f"*{exception_type}* ({count_display})\n```\n{exception_preview}\n```"
                     
                     # Add build URLs if available
@@ -152,31 +187,25 @@ class SlackNotifier:
                             build_num = url.split('/')[-1] if url.split('/')[-1] else url.split('/')[-2]
                             build_links.append(f"<{url}|{build_num}>")
                         
-                        exception_detail += f"\nAppeared in {', '.join(build_links)}"
+                        links_text = f"\nAppeared in {', '.join(build_links)}"
                         
                         # Add "and X more" if there are additional builds
                         if len(data['build_urls']) > 3:
-                            exception_detail += f" and {len(data['build_urls']) - 3} more"
+                            links_text += f" and {len(data['build_urls']) - 3} more"
+                        
+                        # Check if adding links would exceed limit
+                        if len(exception_detail + links_text) <= 2900:
+                            exception_detail += links_text
                     
-                    exception_lines.append(exception_detail)
-                
-                # Create section text with job name as link and all exception details
-                if JENKINS_URL:
-                    job_link = f"<{JENKINS_URL}/job/{job_name}/|{job_name}>"
-                else:
-                    job_link = job_name
-                    
-                section_text = f"*{job_link}* ({failure_display})\n\n" + "\n\n".join(exception_lines)
-                
-                # Add job section block
-                job_block = {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": section_text
+                    # Create exception block
+                    exception_block = {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": exception_detail
+                        }
                     }
-                }
-                blocks.append(job_block)
+                    blocks.append(exception_block)
                 
                 # Add divider after each job (except the last one)
                 if job_name != sorted_jobs[-1][0]:
@@ -241,6 +270,7 @@ class SlackNotifier:
         for exception_type, data in sorted(exceptions.items(), key=lambda x: x[1]['count'], reverse=True):
             # Escape and truncate exception lines
             exception_preview = self._escape_slack_text(data['latest_line'])
+            exception_preview = self._truncate_for_slack(exception_preview, 2500)  # Leave room for other text
             
             # Format count with "+" if at limit
             count = data['count']
@@ -254,11 +284,15 @@ class SlackNotifier:
             
             # Add build URLs if available
             if data.get('build_urls'):
-                section_text += "\n*Build URLs:*"
+                build_links_text = "\n*Build URLs:*"
                 for url in data['build_urls'][:3]:  # Show max 3 URLs
-                    section_text += f"\n• <{url}|Build Link>"
+                    build_links_text += f"\n• <{url}|Build Link>"
                 if len(data['build_urls']) > 3:
-                    section_text += f"\n• ... and {len(data['build_urls']) - 3} more"
+                    build_links_text += f"\n• ... and {len(data['build_urls']) - 3} more"
+                
+                # Check if adding links would exceed limit
+                if len(section_text + build_links_text) <= 2900:
+                    section_text += build_links_text
             
             blocks.append({
                 "type": "section",
