@@ -3,15 +3,18 @@ Log analysis module for extracting exceptions and context from Jenkins build log
 """
 
 import re
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 
 class LogAnalyzer:
     """Analyzer for Jenkins build logs to extract exceptions and context."""
     
     @staticmethod
-    def extract_exception_from_log(log_content: str) -> Tuple[str, str]:
-        """Extract the latest line containing 'Exception' from a log file with extended context."""
+    def extract_exception_from_log(log_content: str, ignore_exceptions: List[str] = None) -> Tuple[str, str]:
+        """Extract the latest line containing 'Exception' from a log file with extended context, excluding ignored exceptions."""
+        if ignore_exceptions is None:
+            ignore_exceptions = []
+        
         lines = log_content.strip().split('\n')
         
         # Find the latest timestamp line (pattern: YYYY-MM-DD HH:MM:SS)
@@ -36,8 +39,16 @@ class LogAnalyzer:
                     '<method', 'with_traceback', 'of \'', 'objects>',
                     'raise', 'except', 'try:', 'catch'
                 ]):
-                    exception_index = i
-                    break
+                    # Check if this exception should be ignored
+                    should_ignore = False
+                    for ignore_pattern in ignore_exceptions:
+                        if ignore_pattern and ignore_pattern in line:
+                            should_ignore = True
+                            break
+                    
+                    if not should_ignore:
+                        exception_index = i
+                        break
         
         if exception_index != -1:
             # If the latest timestamp is after the exception, find an earlier timestamp
@@ -77,21 +88,29 @@ class LogAnalyzer:
             line = lines[i]
             for pattern in error_patterns:
                 if re.search(pattern, line, re.IGNORECASE):
-                    if latest_timestamp_index != -1:
-                        context_start = latest_timestamp_index
-                    else:
-                        context_start = max(0, i - 10)
-                    
-                    # Find the end point - stop before "Build step 'Execute shell' marked build as failure"
-                    context_end = len(lines)
-                    for j in range(context_start, len(lines)):
-                        if "Build step 'Execute shell' marked build as failure" in lines[j]:
-                            context_end = j  # Don't include the build failure line
+                    # Check if this error line should be ignored
+                    should_ignore = False
+                    for ignore_pattern in ignore_exceptions:
+                        if ignore_pattern and ignore_pattern in line:
+                            should_ignore = True
                             break
                     
-                    context_lines = lines[context_start:context_end]
-                    context = '\n'.join(context_lines)
-                    return line.strip(), context
+                    if not should_ignore:
+                        if latest_timestamp_index != -1:
+                            context_start = latest_timestamp_index
+                        else:
+                            context_start = max(0, i - 10)
+                        
+                        # Find the end point - stop before "Build step 'Execute shell' marked build as failure"
+                        context_end = len(lines)
+                        for j in range(context_start, len(lines)):
+                            if "Build step 'Execute shell' marked build as failure" in lines[j]:
+                                context_end = j  # Don't include the build failure line
+                                break
+                        
+                        context_lines = lines[context_start:context_end]
+                        context = '\n'.join(context_lines)
+                        return line.strip(), context
         
         return "No clear error found", ""
     
@@ -144,6 +163,27 @@ class LogAnalyzer:
         
         return "BuildFailure"
     
+    @staticmethod
+    def _normalize_exception_line(exception_line: str) -> str:
+        """Normalize exception line by removing timestamps only."""
+        if not exception_line:
+            return exception_line
+        
+        # Remove leading timestamp and log level if present
+        # Pattern: YYYY-MM-DD HH:MM:SS[.mmm] [|] [LEVEL] [|]
+        timestamp_pattern = r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s*(?:\|\s*)?(?:INFO|ERROR|WARN|DEBUG|FATAL|TRACE)?\s*(?:\|\s*)?'
+        normalized = re.sub(timestamp_pattern, '<timestamp>', exception_line).strip()
+        
+        # Replace very long token-like strings with <token>
+        # Matches quoted strings longer than 50 characters that look like tokens (base64, API keys, etc.)
+        normalized = re.sub(r"'[A-Za-z0-9+/=_-]{50,}'", "'<token>'", normalized)
+        normalized = re.sub(r'"[A-Za-z0-9+/=_-]{50,}"', '"<token>"', normalized)
+        
+        # Clean up any leading colons left over
+        normalized = re.sub(r'^:\s*', '', normalized)
+        
+        return normalized
+
     def print_console_summary(self, job_exceptions: Dict):
         """Print summary to console."""
         print("\n=== JENKINS FAILURE EXCEPTIONS SUMMARY ===\n")
@@ -153,15 +193,17 @@ class LogAnalyzer:
             
             for exception_type, data in sorted(exceptions.items()):
                 print(f"   📊 {exception_type} ({data['count']} occurrences)")
-                print(f"      Exception: {data['latest_line']}")
                 
-                if data['build_urls']:
-                    print(f"      Build URLs:")
-                    for url in data['build_urls'][:3]:  # Show max 3 URLs
-                        print(f"         🔗 {url}")
-                    if len(data['build_urls']) > 3:
-                        print(f"         ... and {len(data['build_urls']) - 3} more")
-                else:
-                    print(f"      Build URLs: No URLs available")
-                print()
+                # Print all unique exception messages
+                for message, build_urls in data['unique_messages'].items():
+                    print(f"      Exception: {message}")
+                    if build_urls:
+                        print(f"\n      Build URLs:")
+                        for url in build_urls[:3]:  # Show max 3 URLs
+                            print(f"         🔗 {url}")
+                        if len(build_urls) > 3:
+                            print(f"         ... and {len(build_urls) - 3} more")
+                    else:
+                        print(f"\n      Build URLs: No URLs available")
+                    print()
             print()

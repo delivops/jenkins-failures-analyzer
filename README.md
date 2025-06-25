@@ -1,6 +1,22 @@
 # Jenkins Failure Analysis System
 
-Monitors Jenkins build failures, analyzes logs in-memory, and sends detailed Slack notifications with zero disk usage.
+Monitors Jenkins build failures, analyzes ### Slack### Slack
+```
+🔴 reddit_search_posts (3 failures)
+• java.lang.IllegalArgumentException (x1)
+• ERROR (x1)
+• AttributeError (x1)
+Total failures: 3 | Exception types: 3 | Unique messages: 3
+
+[Attached: reddit_search_posts_exceptions.txt]
+```dit_search_posts (3 failures)
+*java.lang.IllegalArgumentException* (x1)
+*ERROR* (x1)
+*AttributeError* (x1)
+
+� Complete exception details for job reddit_search_posts
+reddit_search_posts_exceptions.txt
+```sends detailed Slack notifications with zero disk usage.
 
 ## � Quick Start
 
@@ -45,6 +61,7 @@ export SLACK_CHANNEL="#jenkins-health"
 ```bash
 export WINDOW_HOURS="24"                    # Analysis time window (default: 24 hours)
 export MAX_FAILURES_COUNT_PER_JOB="100"     # Max failed builds per job (default: 100)
+export IGNORE_EXCEPTIONS="Exception,Warning" # Comma-separated exception types to ignore
 ```
 
 ### Setup Tokens
@@ -54,7 +71,7 @@ export MAX_FAILURES_COUNT_PER_JOB="100"     # Max failed builds per job (default
 
 **Slack Bot Token:**
 1. [Slack App Directory](https://api.slack.com/apps) → Create/select app
-2. OAuth & Permissions → Add scopes: `chat:write`, `chat:write.public`
+2. OAuth & Permissions → Add scopes: `chat:write`, `chat:write.public`, `files:write`, `files:read`
 3. Install app → Copy "Bot User OAuth Token" (starts with `xoxb-`)
 
 ## 📊 Example Output
@@ -75,8 +92,32 @@ Summary: 15 jobs with failures, 42 total failed builds
 ```
 
 ### Slack
-- **Summary**: Overall health with failed jobs/builds count
-- **Threaded Details**: Per-job breakdown with code-formatted context
+**Snippet File Mode (MAX_SNIPPETS_PER_EXCEPTION=0):**
+```
+🔴 search_user_feed_instagram (10+ failures)
+📊 Exception (x9, 7 unique)
+📊 instagram.vs_lobster_instagram.InstagramAPIException (x1)
+
+Attached Files:
+📎 search_user_feed_instagram_Exception.txt
+� search_user_feed_instagram_instagram.vs_lobster_instagram.InstagramAPIException.txt
+```
+
+**Traditional Mode (MAX_SNIPPETS_PER_EXCEPTION > 0):**
+```
+🔴 Find Fake Tweets - Priority (12 failures)
+📊 Exception (x10, 5 unique)
+• Omar's API encountered an issue. Contact Omar... (🔗, +4)
+• API response problem with search continuation... (🔗)
+... and 3 more unique messages
+```
+
+**Key Features:**
+- Clean single message per job with exception counts and summary stats
+- File attachment included in the same message (not separate or threaded)
+- Clear visual separators between exception types and individual messages in files
+- Up to 3 build URLs provided per unique exception message
+- Grouped exceptions with counts and unique message indicators
 
 ## 🐛 Troubleshooting
 

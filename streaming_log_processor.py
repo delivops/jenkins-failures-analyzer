@@ -9,7 +9,7 @@ from typing import Dict, Tuple
 
 from jenkins_client import JenkinsClient
 from log_analyzer import LogAnalyzer
-from config import WINDOW_HOURS, MAX_FAILURES_COUNT_PER_JOB
+from config import WINDOW_HOURS, MAX_FAILURES_COUNT_PER_JOB, IGNORE_EXCEPTIONS
 
 
 class StreamingLogProcessor:
@@ -47,6 +47,8 @@ class StreamingLogProcessor:
             print(f"Fetching jobs…")
             jobs = self.client.get_jobs()
             print(f"Found {len(jobs)} jobs")
+            if IGNORE_EXCEPTIONS:
+                print(f"Ignoring exceptions: {', '.join(IGNORE_EXCEPTIONS)}")
         except Exception as exc:
             sys.exit(f'Error fetching job list: {exc}')
 
@@ -54,7 +56,7 @@ class StreamingLogProcessor:
             print('No jobs found – check credentials / folder permissions', file=sys.stderr)
             return {}, 0, 0
 
-        job_exceptions = defaultdict(lambda: defaultdict(lambda: {"count": 0, "latest_line": "", "build_urls": []}))
+        job_exceptions = defaultdict(lambda: defaultdict(lambda: {"count": 0, "unique_messages": {}}))
         total_failed_jobs = 0
         total_failed_builds = 0
 
@@ -84,19 +86,25 @@ class StreamingLogProcessor:
                         total_failed_builds += 1
                         
                         # Analyze the log content in memory
-                        exception_line, context = self.analyzer.extract_exception_from_log(log_content)
+                        exception_line, context = self.analyzer.extract_exception_from_log(log_content, IGNORE_EXCEPTIONS)
                         
                         # Extract exception type
                         exception_type = self.analyzer._extract_exception_type(exception_line)
                         
-                        # Count occurrences and keep latest
-                        job_exceptions[job_name][exception_type]["count"] += 1
-                        job_exceptions[job_name][exception_type]["latest_line"] = exception_line
+                        # Normalize exception line for proper grouping (remove timestamps, variable data)
+                        normalized_exception_line = self.analyzer._normalize_exception_line(exception_line)
                         
-                        # Add build URL if not already present
+                        # Count occurrences and store unique messages
+                        job_exceptions[job_name][exception_type]["count"] += 1
+                        
+                        # Store unique exception messages with their build URLs (use normalized line as key)
+                        if normalized_exception_line not in job_exceptions[job_name][exception_type]["unique_messages"]:
+                            job_exceptions[job_name][exception_type]["unique_messages"][normalized_exception_line] = []
+                        
+                        # Add build URL if not already present for this specific exception message
                         build_url = build['url']
-                        if build_url not in job_exceptions[job_name][exception_type]["build_urls"]:
-                            job_exceptions[job_name][exception_type]["build_urls"].append(build_url)
+                        if build_url not in job_exceptions[job_name][exception_type]["unique_messages"][normalized_exception_line]:
+                            job_exceptions[job_name][exception_type]["unique_messages"][normalized_exception_line].append(build_url)
                         
                         # Format timestamp for display
                         ts = _dt.datetime.fromtimestamp(build['timestamp'] / 1000, tz=_dt.UTC).strftime('%Y%m%d_%H%M%S')
@@ -104,8 +112,10 @@ class StreamingLogProcessor:
                     else:
                         # Log fetch failed
                         job_exceptions[job_name]["LogFetchError"]["count"] += 1
-                        job_exceptions[job_name]["LogFetchError"]["latest_line"] = "Error fetching log content"
-                        job_exceptions[job_name]["LogFetchError"]["build_urls"].append(build['url'])
+                        error_message = "Error fetching log content"
+                        if error_message not in job_exceptions[job_name]["LogFetchError"]["unique_messages"]:
+                            job_exceptions[job_name]["LogFetchError"]["unique_messages"][error_message] = []
+                        job_exceptions[job_name]["LogFetchError"]["unique_messages"][error_message].append(build['url'])
                         print(f"  Failed to fetch: build_{build['number']}")
                 
                 if job_has_failures:
