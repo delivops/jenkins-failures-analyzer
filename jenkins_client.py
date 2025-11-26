@@ -33,10 +33,23 @@ class JenkinsClient:
                 raise
     
     def get_jobs(self) -> List[Dict[str, str]]:
-        """Return a list of {name,url} dicts for every job (non‑recursive)."""
-        api = self.base_url + '/api/json'
-        data = self._json_get(api, params={'tree': 'jobs[name,url]'})
-        return data.get('jobs', [])
+        """Return a list of {name,url} dicts for every job (recursive into folders)."""
+        return self._get_jobs_recursive(self.base_url)
+    
+    def _get_jobs_recursive(self, url: str) -> List[Dict[str, str]]:
+        """Recursively fetch jobs, descending into folders."""
+        api = url.rstrip('/') + '/api/json'
+        data = self._json_get(api, params={'tree': 'jobs[name,url,_class]'})
+        
+        result = []
+        for job in data.get('jobs', []):
+            job_class = job.get('_class', '')
+            # Check if this is a folder (Cloudbees or native folder)
+            if 'folder' in job_class.lower():
+                result.extend(self._get_jobs_recursive(job['url']))
+            else:
+                result.append({'name': job['name'], 'url': job['url']})
+        return result
     
     def get_failed_builds(self, job_url: str, cutoff_ms: int, limit: int):
         """Get up to *limit* failure builds for *job_url* newer than *cutoff_ms*."""
